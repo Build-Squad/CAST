@@ -1,12 +1,12 @@
 #Community Management
 
 ##Transactions
-		· Create community
-		· Join community
-		· Add role to community
-		· Delete role from community
-		· Add/revoke role to user *
-		· Remove role to user *
+1 Create community
+1 Join community
+1 Add role to community
+1 Delete role from community
+1 Add/revoke role to user *
+1 Remove role to user *
 
 ##Scripts
 		· Get community info
