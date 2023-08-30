@@ -1,0 +1,1 @@
+// This script will take community store address, community ID and proposal ID

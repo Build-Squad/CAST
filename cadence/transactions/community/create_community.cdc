@@ -1,0 +1,1 @@
+// This transaction will create and store a new community resource
