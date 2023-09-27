@@ -1,1 +1,0 @@
-// This transaction should allow certain community members to modify the community rules

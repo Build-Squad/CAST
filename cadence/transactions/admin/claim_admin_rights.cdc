@@ -1,0 +1,1 @@
+// This tx will allow an account to receive a CommunityAdmin capability

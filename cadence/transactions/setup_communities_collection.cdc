@@ -1,1 +1,0 @@
-// Transaction for setting up an account to be able to create and store communities

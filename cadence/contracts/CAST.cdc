@@ -1,18 +1,7 @@
-// (read this after going through the rest of the contract) 
-// Crazy idea, what if CAST is really a contract interface and each community is an
-// implementation of that contract, allowing communities to define their own roles
-// while providing default implementations for the 3 most basic roles (creating proposals,
-// voting proposals and moderate community)
-// This would be incredibly flexible but also will require more work to launch a new 
-// community, needing to deploy a new contract for each of them, maybe that could be done through
-// a no-code tool. For FLIPs it would just mean we would need to split the contract in two
-// files, pub contract interface CAST and pub contract FLIPS: CAST
-// There a couple of questions about the future scope of CAST beyond voting FLIPs that we may want
-// to try to ask before tying ourselves to a certain architecture
-
-/// tl;dr: CAST will allow anyone to create a @Community, and then to mint @Membership(s) 
-/// to other accounts. At least the owner of the community will be able to create @Proposal(s)
-/// and then members will be able to cast a @Vote about the proposal 
+/// tl;dr: CAST will allow anyone to create a `@Community`, then any account could 
+/// request a single `@Membership` of that community that will be delivered to it via  
+/// a capability that will be `inbox.publish()` to that account. `@Membership` will  
+/// be able to create `@Proposal`(s) and to cast `@Vote`(s)
 pub contract CAST {
     
     ///
@@ -30,72 +19,114 @@ pub contract CAST {
     ///
     /// Structs
     ///
+    pub struct CommunityInfo {
+        pub let name: String
+
+        init (name: String) {
+            self.name = name
+        }
+    }
 
     ///
-    /// Resources
+    /// Resource interfaces
     ///
-
-    // Every different role inside a community will be represented by a resource interface
-    // exposing only the functions that allow to execute that action.
-    // Membership roles will have capabilities of this types depending on which role they hold
-    pub resource interface ProposalCreator {
-
-        pub fun createProposal(proposal: @Proposal)
-
+    pub resource interface CommunityAdmin {
+        pub fun setupCommunity (votingCap: Capability<&{BallotBox}>, proposingCap: Capability<&{ProposalCreator}>)
+        pub fun acceptProposal (proposalID: UInt64)
     }
 
-    // Pretty straight forward
-    pub resource interface BallotBox {
-
-        pub fun castVoteOnProposal()
+    // Community will need to conform to this in order to support public script info
+    pub resource interface CommunityPublic {
+        // probably we need to define a struct defining community info
+        // that struct should be filled on community creation and returned by this fun
+        pub fun getCommunityInfo () /*: CommunityInfo */
+        pub fun getProposals (): {UInt64: &Proposal}
+        pub fun getProposalInfo (proposalID: UInt64)
 
     }
-
-    // private capability published into account that allows you to get membership
-    pub resource interface MembershipGranter {
-        pub fun grantMembership (votingCap: Capability<&{BallotBox}>, proposingCap: Capability<&{ProposalCreator}>): @Membership
-    }
-
+    
     // public interface anyone can call it
     pub resource interface MembershipRequestManager {
         pub fun requestMembership (user: Address): String
     }
 
-    pub resource interface CommunityAdmin {
-        pub fun setupCommunity (votingCap: Capability<&{BallotBox}>, membershipCap: Capability<&{MembershipGranter}>)
-        pub fun acceptProposal (proposalID: UInt64)
+    // Membership roles will have capabilities of this types depending on which role they hold
+    pub resource interface ProposalCreator {
+        pub fun createProposal(proposal: @Proposal)
+    }
+    
+    // Pretty straight forward
+    pub resource interface BallotBox {
+        pub fun castVoteOnProposal()
     }
 
-    pub resource Community: CommunityAdmin, MembershipRequestManager, MembershipGranter, ProposalCreator, BallotBox {
+    // 
+    pub resource interface MembershipGranter {
+        pub fun getMembership (): @Membership
+    }
 
+    ///
+    /// Resources
+    ///
+
+    pub resource Community: CommunityAdmin, MembershipRequestManager, ProposalCreator, BallotBox {
+        // Community admin account will be linked to the Community resource for
+        // for allowing it to control who belongs to it publishing capabilities
         pub let communityAdminAuthAccountCapability: Capability<&AuthAccount>
-        pub var grantMembershipCapability: Capability<&{MembershipGranter}>?
+
+        pub var membershipManagerCapability: Capability<&{MembershipRequestManager}>?
+
+        // After creating the community, a voting and proposing capabilities pointing
+        // to itself should be created and stored into it so they can be included in
+        // the community `@Membership`s
         pub var votingCapability: Capability<&{BallotBox}>?
+        pub var proposingCapability: Capability<&{ProposalCreator}>?
 
-        // this might be a dictionary?
-        pub let members: [Address]
+        pub let info: CommunityInfo
 
-        // How to store proposals? maybe just an array? something that they need to be 
-        // indexed by so we really need a dictionary?
-        pub let inStudyProposals: @{UInt64: Proposal}
+        // maybe we can open the option to ban users by setting this to false
+        // so far nil means is not a user, true is that is already a user
+        pub let members: {Address: Bool?}
 
-        pub let acceptedProposals: @{UInt64: Proposal}
+        // Not sure how to separate accepted proposals from those which haven't been
+        // reviewed
+        pub let inStudyProposals: @{UInt64: Proposal?}
+        pub let acceptedProposals: @{UInt64: Proposal?}
 
         pub fun requestMembership (user: Address): String {
             pre {
-                // check that no membership has been granted previously for that address
+                self.members[user] == nil: "User is already a member"
             }
+            // Borrow a reference to community admin auth account
             let adminAccountRef = self.communityAdminAuthAccountCapability.borrow()
                 ?? panic ("Can't borrow community admin account reference")
-            adminAccountRef.inbox.publish(self.grantMembershipCapability!, name: "cap name", recipient: user)
-            return "cap name"
-        }
-
-        // createMembership function could ask for some FungibleTokens as a parameter
-        // in order to make it not free for anyone to join a Community
-        // 
-        pub fun grantMembership (votingCap: Capability<&{BallotBox}>, proposingCap: Capability<&{ProposalCreator}>): @Membership {
-            return <- create Membership(votingCap: votingCap, proposingCap: proposingCap)
+            // Create a membership resource for requesting user
+            let membership <- create Membership(user: user, votingCap: self.votingCapability!, proposingCap: self.proposingCapability!)
+            // Create a membership issuer resource that will hold the Membership resource for distribution
+            let issuer <- create MembershipIssuer(membership: <- membership)
+            // Create a base string that will identify paths for membership creation
+            // of user inside this community
+            let userCommunityBaseString = self.info.name.concat(user.toString())
+            // Create issuer custom storage path
+            let issuerStoragePath = StoragePath(identifier: userCommunityBaseString
+                .concat("MembershipIssuer"))
+                    ?? panic("Fail to create membership issuer storage path")
+            // Store it into admin account
+            adminAccountRef.save(<- issuer, to: issuerStoragePath)
+            // Create a private path por linking a capability to the issuer
+            let granterPrivatePath = PrivatePath(identifier: userCommunityBaseString
+                .concat("MembershipGranter"))
+                    ?? panic("Fail to create membership issuer private path")
+            // And link it to publish capability to user account
+            let granterCap = adminAccountRef
+                .link<&{MembershipGranter}>(granterPrivatePath, target: issuerStoragePath)
+                    ?? panic("Error while linking membership issuer")
+            // Publish capability using base string as name
+            adminAccountRef.inbox.publish(granterCap, name: userCommunityBaseString, recipient: user)
+            // Register the address as a member
+            self.members[user] = true
+            // Return base string so user can claim issuer capability
+            return userCommunityBaseString
         }
 
         // this would store a new proposal, how to manage accepted or not?
@@ -107,9 +138,9 @@ pub contract CAST {
 
         }
 
-        pub fun setupCommunity (votingCap: Capability<&{BallotBox}>, membershipCap: Capability<&{MembershipGranter}>) {
+        pub fun setupCommunity (votingCap: Capability<&{BallotBox}>, proposingCap: Capability<&{ProposalCreator}>) {
             self.votingCapability = votingCap
-            self.grantMembershipCapability = membershipCap
+            self.proposingCapability = proposingCap
         }
 
         pub fun acceptProposal (proposalID: UInt64) {
@@ -117,12 +148,13 @@ pub contract CAST {
             self.acceptedProposals[proposalID] <-> self.inStudyProposals[proposalID]
         }
 
-        init (authAccountCapability: Capability<&AuthAccount>) {
+        init (name: String, authAccountCapability: Capability<&AuthAccount>) {
+            self.info = CommunityInfo(name: name)
             self.communityAdminAuthAccountCapability = authAccountCapability
-            // this two would need to be setup on a tx after saving the resource into storage
-            self.grantMembershipCapability = nil
+            self.membershipManagerCapability = nil
             self.votingCapability = nil
-            self.members = []
+            self.proposingCapability = nil
+            self.members = {}
             self.inStudyProposals <- {}
             self.acceptedProposals <- {}
         }
@@ -134,37 +166,63 @@ pub contract CAST {
 
     }
 
-    // This resource will represent the belonging of any user to a Community
-    // we may want to do this an NFT, if not we should consider if we want a collection-like
-    // resource to store all account membership or if we need to directly store memberships
-    // on the account storage 
+    // For each user willing to join a community, the admin will need to create one
+    // of this resources and publish to the user account the MembershipGranter
+    // capability pointing to it. This MembershipIssuer resources should be deleted
+    // after being used
+    pub resource MembershipIssuer: MembershipGranter {
+
+        pub var membership: @Membership?
+  
+        pub fun getMembership (): @Membership {
+            var auxMembership: @Membership? <- nil
+            self.membership <-> auxMembership
+            return <- auxMembership!
+        }
+
+        pub fun hasBeenIssued(): Bool{
+            if (self.membership == nil){
+                return true
+            } else {
+                return false
+            }
+        }
+
+        init (membership: @Membership) {
+            self.membership <- membership
+        }
+
+        destroy () {
+            destroy self.membership
+        }
+    }
+
+    ///
     pub resource Membership {
-        // most likely this should also store user address
+        
+        pub let user: Address
         pub let votingCapability: Capability<&{BallotBox}>
         pub let proposingCapability: Capability<&{ProposalCreator}>
 
-        // This resource should hold capabilities to community stored objects and
-        // expose functions that use those capabilities to allow Membership holders
-        // certain actions.
-        // Most basic action will be voting, we could then think about more complicated
-        // role related actions, such as granting other users different roles or creating
-        // proposals
-        init (votingCap: Capability<&{BallotBox}>, proposingCap: Capability<&{ProposalCreator}>) {
+        //
+        // pub fun propose (proposal: @Proposal)
+        // pub fun vote (proposalID: UInt64)
+        //
+
+        init (user: Address, votingCap: Capability<&{BallotBox}>, proposingCap: Capability<&{ProposalCreator}>) {
+            self.user = user
             self.votingCapability = votingCap
             self.proposingCapability = proposingCap
         }
     }
 
-    // This will keep the proposal content (thinking about flips, a link to the PR?
-    // a bunch of text with the whole proposal?) and the votes
+    ///
     pub resource Proposal {
 
 
     }
 
-    // This is the part I'm most confused about. Should this be a FT? a NFT? not a 
-    // token at all? this should be just yes / no? each proposal could define its own
-    // vote options? for FLIPs its just yes/no, so we can keep it that way
+    ///
     pub resource Vote {
 
     }
@@ -173,8 +231,8 @@ pub contract CAST {
     ///
     /// Functions
     ///
-    pub fun createCommunity (authAccountCapability: Capability<&AuthAccount>): @Community {
-        return <- create Community(authAccountCapability: authAccountCapability)
+    pub fun createCommunity (name: String, authAccountCapability: Capability<&AuthAccount>): @Community {
+        return <- create Community(name: name, authAccountCapability: authAccountCapability)
     }
 
     init() {
