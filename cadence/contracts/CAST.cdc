@@ -27,6 +27,18 @@ pub contract CAST {
         }
     }
 
+    pub enum Strategies: UInt {
+        pub case oneVote
+        pub case tokenWeighted
+        pub case stakedFlowWeighted
+    }
+
+    pub enum VotingResult: UInt {
+        pub case favor
+        pub case against
+        pub case tie
+    }
+
     ///
     /// Resource interfaces
     ///
@@ -57,7 +69,7 @@ pub contract CAST {
     
     // Pretty straight forward
     pub resource interface BallotBox {
-        pub fun castVoteOnProposal()
+        pub fun castVoteOnProposal(proposalID: UInt64, vote: @Vote)
     }
 
     // 
@@ -134,8 +146,13 @@ pub contract CAST {
             self.inStudyProposals[proposal.uuid] <-! proposal
         }
 
-        pub fun castVoteOnProposal() {
-
+        pub fun castVoteOnProposal(proposalID: UInt64, vote: @Vote) {
+            pre {
+                self.acceptedProposals[proposalID] != nil : "Proposal does not match any accepted proposal"
+            }
+            // you need an auxiliary dummy vote that needs to be destroyed latter or
+            // methods for properly dealing with the votes dictionary
+            //self.acceptedProposals[proposalID]!!.registerVote(vote: <-vote)
         }
 
         pub fun setupCommunity (votingCap: Capability<&{BallotBox}>, proposingCap: Capability<&{ProposalCreator}>) {
@@ -218,12 +235,98 @@ pub contract CAST {
 
     ///
     pub resource Proposal {
+        
+        access(self) let endingTime: UFix64
+        access(self) let votes: @{Address: Vote}
+        access(self) let results: {VotingResult: UFix64}
+        access(self) var approved: VotingResult?
+        access(self) var strategy: Strategies
 
 
+        pub fun registerVote(vote: @Vote) {
+            pre {
+                self.endingTime > vote.getCastingTime() : "Voting has ended"
+                self.votes[vote.getIssuer()] == nil : "Member has already vote"
+            }
+            self.votes[vote.getIssuer()] <-! vote
+        }
+
+        pub fun borrowVote(voter: Address): &Vote? {
+            return &self.votes[voter] as &Vote?
+        }
+
+        pub fun resolveVoting (): VotingResult {
+            
+            pre {
+                getCurrentBlock().timestamp > self.endingTime: "Voting has not finished yet"
+                self.approved == nil : "Voting has already been resolved"
+            }
+
+            var favor: UFix64 = 0.0
+            var against: UFix64 = 0.0
+
+            // Iterate over the votes dictionary retrieving each address option,
+            // then apply the appropriate factor to each vote and compose the 
+            // result dictionary.
+            switch self.strategy {
+                case Strategies.oneVote:
+                    
+                case Strategies.tokenWeighted:
+                 
+                case Strategies.stakedFlowWeighted:
+            }
+
+            // This method should mutate the approved result field of the proposal
+            // Would be worth to get rid of the votes dictionary for saving storage
+            // or would it be better to keep it for accountability purposes
+            return VotingResult.tie
+
+        }
+
+        access(self) fun computeVotes (votes: &{Address: Vote})  {
+            for voter in votes.keys {
+                 
+            }
+        }
+
+        init (endingTime: UFix64, strategy: UInt) {
+            self.endingTime = endingTime
+            self.votes <- {}
+            self.results = {}
+            self.approved = nil
+            self.strategy = Strategies(rawValue: strategy)
+                ?? panic ("Invalid strategy")
+        }
+
+        destroy () {
+            destroy self.votes
+        }
     }
 
     ///
     pub resource Vote {
+
+        access(self) let option: Bool
+        access(self) let castingTime: UFix64
+        access(self) let issuer: Address
+
+        pub fun getIssuer(): Address {
+            return self.issuer
+        }
+
+        pub fun getCastingTime(): UFix64 {
+            return self.castingTime
+        }
+
+        pub fun getOption (): Bool {
+            return self.option
+        }
+
+        init (option: Bool, issuer: Address) {
+            self.option = option
+            self.castingTime = getCurrentBlock().timestamp
+            self.issuer = issuer
+        }
 
     }
 
